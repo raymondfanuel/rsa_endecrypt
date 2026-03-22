@@ -11,20 +11,13 @@ from __future__ import annotations
 
 import argparse
 import base64
+from collections import Counter
+from functools import lru_cache
 import math
 import pathlib
 import random
 import sys
-from typing import Optional
-
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import padding, rsa
-from cryptography.hazmat.primitives.serialization import (
-    Encoding,
-    NoEncryption,
-    PrivateFormat,
-    PublicFormat,
-)
+from typing import Any, Optional
 
 
 def _exit(message: str, code: int = 1) -> None:
@@ -79,11 +72,52 @@ def _mod_inverse(a: int, modulus: int) -> int:
         _exit("e has no modular inverse modulo phi (gcd(e, phi) != 1)")
 
 
+def _verbose(enabled: bool, message: str) -> None:
+    if enabled:
+        print(message)
+
+
+@lru_cache(maxsize=1)
+def _require_cryptography() -> dict[str, Any]:
+    try:
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import padding, rsa
+        from cryptography.hazmat.primitives.serialization import (
+            Encoding,
+            NoEncryption,
+            PrivateFormat,
+            PublicFormat,
+        )
+    except ImportError:
+        _exit(
+            "secure mode requires the 'cryptography' package. "
+            "Install it with: python3 -m pip install cryptography"
+        )
+
+    return {
+        "hashes": hashes,
+        "serialization": serialization,
+        "padding": padding,
+        "rsa": rsa,
+        "Encoding": Encoding,
+        "NoEncryption": NoEncryption,
+        "PrivateFormat": PrivateFormat,
+        "PublicFormat": PublicFormat,
+    }
+
+
 # -------------------------
 # Secure OAEP mode
 # -------------------------
 
 def generate_keys(args: argparse.Namespace) -> None:
+    deps = _require_cryptography()
+    rsa = deps["rsa"]
+    Encoding = deps["Encoding"]
+    PrivateFormat = deps["PrivateFormat"]
+    PublicFormat = deps["PublicFormat"]
+    NoEncryption = deps["NoEncryption"]
+
     if args.bits < 2048:
         _exit("RSA key size must be at least 2048 bits")
 
@@ -108,6 +142,9 @@ def generate_keys(args: argparse.Namespace) -> None:
 
 
 def _load_public_key(path: pathlib.Path):
+    deps = _require_cryptography()
+    serialization = deps["serialization"]
+
     key_data = _read_bytes(path)
     try:
         key = serialization.load_pem_public_key(key_data)
@@ -117,6 +154,9 @@ def _load_public_key(path: pathlib.Path):
 
 
 def _load_private_key(path: pathlib.Path):
+    deps = _require_cryptography()
+    serialization = deps["serialization"]
+
     key_data = _read_bytes(path)
     try:
         key = serialization.load_pem_private_key(key_data, password=None)
@@ -150,7 +190,10 @@ def _get_ciphertext_from_args(args: argparse.Namespace) -> bytes:
     return _read_bytes(args.infile)
 
 
-def _oaep_padding() -> padding.OAEP:
+def _oaep_padding() -> Any:
+    deps = _require_cryptography()
+    padding = deps["padding"]
+    hashes = deps["hashes"]
     return padding.OAEP(
         mgf=padding.MGF1(algorithm=hashes.SHA256()),
         algorithm=hashes.SHA256(),
@@ -159,6 +202,10 @@ def _oaep_padding() -> padding.OAEP:
 
 
 def encrypt_data(args: argparse.Namespace) -> None:
+    deps = _require_cryptography()
+    rsa = deps["rsa"]
+    hashes = deps["hashes"]
+
     public_key = _load_public_key(args.public_key)
     plaintext = _get_plaintext_from_args(args)
 
@@ -183,6 +230,9 @@ def encrypt_data(args: argparse.Namespace) -> None:
 
 
 def decrypt_data(args: argparse.Namespace) -> None:
+    deps = _require_cryptography()
+    rsa = deps["rsa"]
+
     private_key = _load_private_key(args.private_key)
     ciphertext = _get_ciphertext_from_args(args)
 
@@ -219,10 +269,10 @@ def _resolve_phi_and_d(
     p_raw: Optional[str],
     q_raw: Optional[str],
     e_raw: Optional[str],
-) -> tuple[int, Optional[int], Optional[int], Optional[int]]:
+) -> tuple[int, Optional[int], list[int]]:
     if d_raw is not None:
         d = _parse_nonnegative_int(d_raw, "d")
-        return d, None, None, None
+        return d, None, []
 
     if phi_raw is not None:
         if e_raw is None:
@@ -232,7 +282,7 @@ def _resolve_phi_and_d(
         if phi <= 1:
             _exit("phi must be > 1")
         d = _mod_inverse(e, phi)
-        return d, phi, None, None
+        return d, phi, []
 
     if p_raw is not None or q_raw is not None:
         if p_raw is None or q_raw is None:
@@ -246,7 +296,7 @@ def _resolve_phi_and_d(
             _exit("p and q must be > 1")
         phi = (p - 1) * (q - 1)
         d = _mod_inverse(e, phi)
-        return d, phi, p, q
+        return d, phi, [p, q]
 
     _exit("provide decryption material via one option: --d OR --phi --e OR --p --q --e")
 
@@ -286,40 +336,28 @@ def ctf_decrypt(args: argparse.Namespace) -> None:
     if c >= n:
         _exit("ciphertext integer should satisfy c < n")
 
-    d, phi, p, q = _resolve_phi_and_d(
+    d, phi, known_factors = _resolve_phi_and_d(
         d_raw=args.d,
         phi_raw=args.phi,
         p_raw=args.p,
         q_raw=args.q,
         e_raw=args.e,
     )
+    _verbose(args.verbose, f"[ctf-decrypt] using d={d}")
 
     m = pow(c, d, n)
+    _verbose(args.verbose, f"[ctf-decrypt] computed m = c^d mod n")
 
     if args.show_private:
         print(f"d: {d}")
         if phi is not None:
             print(f"phi: {phi}")
-        if p is not None and q is not None:
-            print(f"p: {p}")
-            print(f"q: {q}")
+        if known_factors:
+            print("factors:")
+            for factor in sorted(known_factors):
+                print(factor)
 
-    if args.as_text:
-        try:
-            print(_int_to_bytes(m).decode("utf-8"))
-        except UnicodeDecodeError:
-            _exit("decrypted integer is not valid UTF-8")
-        return
-
-    if args.as_hex:
-        print(hex(m))
-        return
-
-    if args.as_base64:
-        print(base64.b64encode(_int_to_bytes(m)).decode("ascii"))
-        return
-
-    print(m)
+    _print_ctf_plaintext(m, args.output_mode)
 
 
 def ctf_derive_d(args: argparse.Namespace) -> None:
@@ -347,29 +385,51 @@ def ctf_derive_d(args: argparse.Namespace) -> None:
     print(f"d: {d}")
 
 
-_SMALL_PRIMES = (
-    2,
-    3,
-    5,
-    7,
-    11,
-    13,
-    17,
-    19,
-    23,
-    29,
-    31,
-    37,
-)
+def _generate_small_primes(limit: int = 1000) -> tuple[int, ...]:
+    if limit < 2:
+        return ()
+
+    sieve = [True] * (limit + 1)
+    sieve[0] = False
+    sieve[1] = False
+
+    for p in range(2, int(limit ** 0.5) + 1):
+        if sieve[p]:
+            start = p * p
+            sieve[start : limit + 1 : p] = [False] * (((limit - start) // p) + 1)
+
+    return tuple(i for i, is_prime in enumerate(sieve) if is_prime)
+
+
+_SMALL_PRIMES = _generate_small_primes(1000)
+
+
+def _trial_division_factor(n: int) -> Optional[tuple[int, int]]:
+    if n % 2 == 0:
+        return 2, n // 2
+
+    for prime in _SMALL_PRIMES:
+        if prime == 2:
+            continue
+        if prime * prime > n:
+            break
+        if n % prime == 0:
+            return prime, n // prime
+
+    return None
 
 
 def _is_probable_prime(n: int, rounds: int = 12) -> bool:
     if n < 2:
         return False
+    if n in (2, 3):
+        return True
 
     for p in _SMALL_PRIMES:
         if n == p:
             return True
+        if p * p > n:
+            break
         if n % p == 0:
             return False
 
@@ -394,7 +454,9 @@ def _is_probable_prime(n: int, rounds: int = 12) -> bool:
     return True
 
 
-def _pollards_rho(n: int, attempts: int = 24, max_steps: int = 200_000) -> int:
+def _pollards_rho(
+    n: int, attempts: int = 24, max_steps: int = 200_000, verbose: bool = False
+) -> Optional[int]:
     if n % 2 == 0:
         return 2
     if n % 3 == 0:
@@ -415,21 +477,133 @@ def _pollards_rho(n: int, attempts: int = 24, max_steps: int = 200_000) -> int:
                 continue
             if d == n:
                 break
+            _verbose(verbose, f"[factor] Pollard Rho found divisor: {d}")
             return d
 
-    _exit("factorization failed with Pollard Rho; try again or use known p/q")
+    _verbose(verbose, "[factor] Pollard Rho failed to find divisor")
+    return None
 
 
-def _factor_recursive(n: int, factors: list[int]) -> None:
+def _factor_recursive(n: int, factors: list[int], verbose: bool = False) -> None:
     if n == 1:
         return
     if _is_probable_prime(n):
         factors.append(n)
+        _verbose(verbose, f"[factor] prime factor found: {n}")
         return
 
-    divisor = _pollards_rho(n)
-    _factor_recursive(divisor, factors)
-    _factor_recursive(n // divisor, factors)
+    trial_factor = _trial_division_factor(n)
+    if trial_factor is not None:
+        left, right = trial_factor
+        _verbose(verbose, f"[factor] trial division split: {n} = {left} * {right}")
+        _factor_recursive(left, factors, verbose=verbose)
+        _factor_recursive(right, factors, verbose=verbose)
+        return
+
+    _verbose(verbose, f"[factor] trying Pollard Rho on {n}")
+    divisor = _pollards_rho(n, verbose=verbose)
+    if divisor is None:
+        _exit("factorization failed with Pollard Rho; try again or provide known factors")
+    _factor_recursive(divisor, factors, verbose=verbose)
+    _factor_recursive(n // divisor, factors, verbose=verbose)
+
+
+def _factorize(n: int, verbose: bool = False) -> list[int]:
+    factors: list[int] = []
+    _factor_recursive(n, factors, verbose=verbose)
+    factors.sort()
+    return factors
+
+
+def _phi_from_factorization(factors: list[int]) -> int:
+    if not factors:
+        _exit("cannot compute phi from empty factor list")
+
+    counts = Counter(factors)
+    phi = 1
+    for prime, multiplicity in counts.items():
+        if prime <= 1:
+            _exit("factorization contains invalid factors")
+        phi *= (prime - 1) * (prime ** (multiplicity - 1))
+    return phi
+
+
+def _render_ctf_plaintext(m: int) -> str:
+    message_bytes = _int_to_bytes(m)
+
+    try:
+        decoded_text = message_bytes.decode("utf-8")
+        if decoded_text and all(ch.isprintable() or ch in "\r\n\t" for ch in decoded_text):
+            return decoded_text
+    except UnicodeDecodeError:
+        pass
+
+    try:
+        decoded = base64.b64decode(message_bytes, validate=True)
+    except ValueError:
+        decoded = b""
+
+    if decoded:
+        try:
+            decoded_text = decoded.decode("utf-8")
+            if decoded_text and all(ch.isprintable() or ch in "\r\n\t" for ch in decoded_text):
+                return decoded_text
+        except UnicodeDecodeError:
+            pass
+
+    return "\n".join(
+        [
+            f"message_int: {m}",
+            f"message_hex: {hex(m)}",
+            f"message_base64: {base64.b64encode(message_bytes).decode('ascii')}",
+        ]
+    )
+
+
+def _print_ctf_plaintext(m: int, output_mode: str) -> None:
+    message_bytes = _int_to_bytes(m)
+
+    if output_mode == "text":
+        try:
+            print(message_bytes.decode("utf-8"))
+        except UnicodeDecodeError:
+            _exit("decrypted integer is not valid UTF-8")
+        return
+
+    if output_mode == "hex":
+        print(hex(m))
+        return
+
+    if output_mode == "base64":
+        print(base64.b64encode(message_bytes).decode("ascii"))
+        return
+
+    rendered = _render_ctf_plaintext(m)
+    if "\n" in rendered:
+        print(rendered)
+    else:
+        print(f"message: {rendered}")
+
+
+def _solve_ctf_values(
+    n: int, e: int, c: int, verbose: bool = False
+) -> tuple[list[int], int, int, int]:
+    _verbose(verbose, f"[ctf-solve] starting factorization of n={n}")
+    factors = _factorize(n, verbose=verbose)
+    _verbose(verbose, f"[ctf-solve] factors={factors}")
+    phi = _phi_from_factorization(factors)
+    _verbose(verbose, f"[ctf-solve] phi(n)={phi}")
+    d = _mod_inverse(e, phi)
+    _verbose(verbose, f"[ctf-solve] derived d={d}")
+    m = pow(c, d, n)
+    _verbose(verbose, f"[ctf-solve] computed m = c^d mod n")
+    return factors, phi, d, m
+
+
+def _print_factorization(factors: list[int]) -> None:
+    print("factors:")
+    for factor in factors:
+        print(factor)
 
 
 def ctf_factor(args: argparse.Namespace) -> None:
@@ -437,18 +611,10 @@ def ctf_factor(args: argparse.Namespace) -> None:
     if n <= 1:
         _exit("n must be > 1")
 
-    factors: list[int] = []
-    _factor_recursive(n, factors)
-    factors.sort()
-
-    print("factors:")
-    for factor in factors:
-        print(factor)
-
-    if len(factors) == 2:
-        p, q = factors
-        phi = (p - 1) * (q - 1)
-        print(f"phi: {phi}")
+    factors = _factorize(n, verbose=args.verbose)
+    _print_factorization(factors)
+    phi = _phi_from_factorization(factors)
+    print(f"phi: {phi}")
 
 
 def ctf_solve(args: argparse.Namespace) -> None:
@@ -461,37 +627,77 @@ def ctf_solve(args: argparse.Namespace) -> None:
     if c >= n:
         _exit("ciphertext integer should satisfy c < n")
 
-    factors: list[int] = []
-    _factor_recursive(n, factors)
-    factors.sort()
-
-    if len(factors) != 2:
-        _exit("n does not factor into exactly two primes with this method")
-
-    p, q = factors
-    phi = (p - 1) * (q - 1)
-    d = _mod_inverse(e, phi)
-    m = pow(c, d, n)
-
-    print(f"p: {p}")
-    print(f"q: {q}")
+    factors, phi, d, m = _solve_ctf_values(n, e, c, verbose=args.verbose)
+    _print_factorization(factors)
     print(f"phi: {phi}")
     print(f"d: {d}")
+    _print_ctf_plaintext(m, args.output_mode)
 
-    if args.as_text:
-        try:
-            print(f"message: {_int_to_bytes(m).decode('utf-8')}")
-        except UnicodeDecodeError:
-            print(f"message_int: {m}")
-            print(f"message_hex: {hex(m)}")
-    else:
-        print(f"message_int: {m}")
-        print(f"message_hex: {hex(m)}")
+def ctf_auto(args: argparse.Namespace) -> None:
+    n = _parse_nonnegative_int(args.n, "n")
+    e = _parse_nonnegative_int(args.e, "e")
+    c = _parse_nonnegative_int(args.c, "c")
+
+    if n <= 1:
+        _exit("n must be > 1")
+    if c >= n:
+        _exit("ciphertext integer should satisfy c < n")
+
+    _verbose(
+        args.verbose,
+        "[ctf-auto] strategy: trivial checks -> trial division -> Pollard Rho recursion",
+    )
+    factors, phi, d, m = _solve_ctf_values(n, e, c, verbose=args.verbose)
+    _print_factorization(factors)
+    print(f"phi: {phi}")
+    print(f"d: {d}")
+    _print_ctf_plaintext(m, args.output_mode)
 
 
 # -------------------------
 # CLI
 # -------------------------
+
+
+def _add_ctf_output_mode_flags(parser: argparse.ArgumentParser) -> None:
+    output_group = parser.add_mutually_exclusive_group()
+    output_group.add_argument(
+        "--auto",
+        dest="output_mode",
+        action="store_const",
+        const="auto",
+        help="Auto decode plaintext (default)",
+    )
+    output_group.add_argument(
+        "--as-text",
+        dest="output_mode",
+        action="store_const",
+        const="text",
+        help="Decode plaintext as UTF-8 text",
+    )
+    output_group.add_argument(
+        "--as-hex",
+        dest="output_mode",
+        action="store_const",
+        const="hex",
+        help="Print plaintext integer as hex",
+    )
+    output_group.add_argument(
+        "--as-base64",
+        dest="output_mode",
+        action="store_const",
+        const="base64",
+        help="Print plaintext bytes as base64",
+    )
+    parser.set_defaults(output_mode="auto")
+
+
+def _add_verbose_flag(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print detailed progress and intermediate values",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -556,10 +762,9 @@ def build_parser() -> argparse.ArgumentParser:
     ctf_decrypt_parser.add_argument("--p", help="Prime factor p of n")
     ctf_decrypt_parser.add_argument("--q", help="Prime factor q of n")
     ctf_decrypt_parser.add_argument("--e", help="Public exponent e (required with --phi or --p/--q)")
-    ctf_decrypt_parser.add_argument("--as-text", action="store_true", help="Decode decrypted integer as UTF-8")
-    ctf_decrypt_parser.add_argument("--as-hex", action="store_true", help="Print decrypted integer in hex")
-    ctf_decrypt_parser.add_argument("--as-base64", action="store_true", help="Print decrypted integer bytes as base64")
     ctf_decrypt_parser.add_argument("--show-private", action="store_true", help="Show derived private values")
+    _add_ctf_output_mode_flags(ctf_decrypt_parser)
+    _add_verbose_flag(ctf_decrypt_parser)
     ctf_decrypt_parser.set_defaults(func=ctf_decrypt)
 
     ctf_derive_d_parser = subparsers.add_parser(
@@ -575,6 +780,7 @@ def build_parser() -> argparse.ArgumentParser:
         "ctf-factor", help="Try factoring n with Pollard Rho (works for weaker CTF moduli)"
     )
     ctf_factor_parser.add_argument("--n", required=True, help="Modulus n")
+    _add_verbose_flag(ctf_factor_parser)
     ctf_factor_parser.set_defaults(func=ctf_factor)
 
     ctf_solve_parser = subparsers.add_parser(
@@ -584,8 +790,20 @@ def build_parser() -> argparse.ArgumentParser:
     ctf_solve_parser.add_argument("--n", required=True, help="Modulus n")
     ctf_solve_parser.add_argument("--e", required=True, help="Public exponent e")
     ctf_solve_parser.add_argument("--c", required=True, help="Ciphertext integer")
-    ctf_solve_parser.add_argument("--as-text", action="store_true", help="Attempt UTF-8 decode")
+    _add_ctf_output_mode_flags(ctf_solve_parser)
+    _add_verbose_flag(ctf_solve_parser)
     ctf_solve_parser.set_defaults(func=ctf_solve)
+
+    ctf_auto_parser = subparsers.add_parser(
+        "ctf-auto",
+        help="Auto solve RSA CTF challenge: factor n, derive d, decrypt c with auto decoding",
+    )
+    ctf_auto_parser.add_argument("--n", required=True, help="Modulus n")
+    ctf_auto_parser.add_argument("--e", required=True, help="Public exponent e")
+    ctf_auto_parser.add_argument("--c", required=True, help="Ciphertext integer")
+    _add_ctf_output_mode_flags(ctf_auto_parser)
+    _add_verbose_flag(ctf_auto_parser)
+    ctf_auto_parser.set_defaults(func=ctf_auto)
 
     return parser
 
