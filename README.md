@@ -5,7 +5,7 @@ A practical command-line toolkit for solving RSA-focused CTF challenges, with an
 ## Scripts
 
 - `rsa_ctf_tool.py` (preferred entrypoint)
-- `rsa_endecypt.py` (backward-compatible alias)
+- `rsa_endecrypt.py` (direct module entrypoint)
 
 ## What This Tool Covers
 
