@@ -401,7 +401,7 @@ def _generate_small_primes(limit: int = 1000) -> tuple[int, ...]:
     return tuple(i for i, is_prime in enumerate(sieve) if is_prime)
 
 
-_SMALL_PRIMES = _generate_small_primes(1000)
+_SMALL_PRIMES = _generate_small_primes(10000)
 
 
 def _trial_division_factor(n: int) -> Optional[tuple[int, int]]:
@@ -462,7 +462,8 @@ def _pollards_rho(
     if n % 3 == 0:
         return 3
 
-    for _ in range(attempts):
+    for attempt_index in range(1, attempts + 1):
+        _verbose(verbose, f"[+] Pollard Rho attempt {attempt_index}/{attempts}...")
         x = random.randrange(2, n - 1)
         y = x
         c = random.randrange(1, n - 1)
@@ -477,40 +478,88 @@ def _pollards_rho(
                 continue
             if d == n:
                 break
-            _verbose(verbose, f"[factor] Pollard Rho found divisor: {d}")
+            _verbose(verbose, f"[+] factor found: {d}")
             return d
 
-    _verbose(verbose, "[factor] Pollard Rho failed to find divisor")
+    _verbose(verbose, "[+] Pollard Rho did not find a factor with current limits")
     return None
 
 
-def _factor_recursive(n: int, factors: list[int], verbose: bool = False) -> None:
+def _factor_recursive(
+    n: int,
+    factors: list[int],
+    verbose: bool = False,
+    max_rho_attempts: int = 24,
+    max_rho_steps: int = 200_000,
+) -> bool:
     if n == 1:
-        return
+        return True
     if _is_probable_prime(n):
         factors.append(n)
-        _verbose(verbose, f"[factor] prime factor found: {n}")
-        return
+        _verbose(verbose, f"[+] factor found: {n}")
+        return True
 
+    _verbose(verbose, "[+] trial division...")
     trial_factor = _trial_division_factor(n)
     if trial_factor is not None:
         left, right = trial_factor
-        _verbose(verbose, f"[factor] trial division split: {n} = {left} * {right}")
-        _factor_recursive(left, factors, verbose=verbose)
-        _factor_recursive(right, factors, verbose=verbose)
-        return
+        left_ok = _factor_recursive(
+            left,
+            factors,
+            verbose=verbose,
+            max_rho_attempts=max_rho_attempts,
+            max_rho_steps=max_rho_steps,
+        )
+        right_ok = _factor_recursive(
+            right,
+            factors,
+            verbose=verbose,
+            max_rho_attempts=max_rho_attempts,
+            max_rho_steps=max_rho_steps,
+        )
+        return left_ok and right_ok
 
-    _verbose(verbose, f"[factor] trying Pollard Rho on {n}")
-    divisor = _pollards_rho(n, verbose=verbose)
+    divisor = _pollards_rho(
+        n,
+        attempts=max_rho_attempts,
+        max_steps=max_rho_steps,
+        verbose=verbose,
+    )
     if divisor is None:
-        _exit("factorization failed with Pollard Rho; try again or provide known factors")
-    _factor_recursive(divisor, factors, verbose=verbose)
-    _factor_recursive(n // divisor, factors, verbose=verbose)
+        return False
+    left_ok = _factor_recursive(
+        divisor,
+        factors,
+        verbose=verbose,
+        max_rho_attempts=max_rho_attempts,
+        max_rho_steps=max_rho_steps,
+    )
+    right_ok = _factor_recursive(
+        n // divisor,
+        factors,
+        verbose=verbose,
+        max_rho_attempts=max_rho_attempts,
+        max_rho_steps=max_rho_steps,
+    )
+    return left_ok and right_ok
 
 
-def _factorize(n: int, verbose: bool = False) -> list[int]:
+def _factorize(
+    n: int,
+    verbose: bool = False,
+    max_rho_attempts: int = 24,
+    max_rho_steps: int = 200_000,
+) -> Optional[list[int]]:
     factors: list[int] = []
-    _factor_recursive(n, factors, verbose=verbose)
+    success = _factor_recursive(
+        n,
+        factors,
+        verbose=verbose,
+        max_rho_attempts=max_rho_attempts,
+        max_rho_steps=max_rho_steps,
+    )
+    if not success:
+        return None
     factors.sort()
     return factors
 
@@ -586,10 +635,22 @@ def _print_ctf_plaintext(m: int, output_mode: str) -> None:
 
 
 def _solve_ctf_values(
-    n: int, e: int, c: int, verbose: bool = False
-) -> tuple[list[int], int, int, int]:
+    n: int,
+    e: int,
+    c: int,
+    verbose: bool = False,
+    max_rho_attempts: int = 24,
+    max_rho_steps: int = 200_000,
+) -> Optional[tuple[list[int], int, int, int]]:
     _verbose(verbose, f"[ctf-solve] starting factorization of n={n}")
-    factors = _factorize(n, verbose=verbose)
+    factors = _factorize(
+        n,
+        verbose=verbose,
+        max_rho_attempts=max_rho_attempts,
+        max_rho_steps=max_rho_steps,
+    )
+    if factors is None:
+        return None
     _verbose(verbose, f"[ctf-solve] factors={factors}")
     phi = _phi_from_factorization(factors)
     _verbose(verbose, f"[ctf-solve] phi(n)={phi}")
@@ -610,8 +671,24 @@ def ctf_factor(args: argparse.Namespace) -> None:
     n = _parse_nonnegative_int(args.n, "n")
     if n <= 1:
         _exit("n must be > 1")
+    if args.max_rho_attempts <= 0:
+        _exit("--max-rho-attempts must be > 0")
+    if args.max_rho_steps <= 0:
+        _exit("--max-rho-steps must be > 0")
 
-    factors = _factorize(n, verbose=args.verbose)
+    _verbose(args.verbose, "[+] trial division...")
+    factors = _factorize(
+        n,
+        verbose=args.verbose,
+        max_rho_attempts=args.max_rho_attempts,
+        max_rho_steps=args.max_rho_steps,
+    )
+    if factors is None:
+        print(
+            "factorization did not complete with current methods; "
+            "this challenge may require a different RSA attack"
+        )
+        return
     _print_factorization(factors)
     phi = _phi_from_factorization(factors)
     print(f"phi: {phi}")
@@ -626,8 +703,27 @@ def ctf_solve(args: argparse.Namespace) -> None:
         _exit("n must be > 1")
     if c >= n:
         _exit("ciphertext integer should satisfy c < n")
+    if args.max_rho_attempts <= 0:
+        _exit("--max-rho-attempts must be > 0")
+    if args.max_rho_steps <= 0:
+        _exit("--max-rho-steps must be > 0")
 
-    factors, phi, d, m = _solve_ctf_values(n, e, c, verbose=args.verbose)
+    _verbose(args.verbose, "[+] trial division...")
+    solved = _solve_ctf_values(
+        n,
+        e,
+        c,
+        verbose=args.verbose,
+        max_rho_attempts=args.max_rho_attempts,
+        max_rho_steps=args.max_rho_steps,
+    )
+    if solved is None:
+        print(
+            "factorization did not complete with current methods; "
+            "this challenge may require a different RSA attack"
+        )
+        return
+    factors, phi, d, m = solved
     _print_factorization(factors)
     print(f"phi: {phi}")
     print(f"d: {d}")
@@ -647,7 +743,14 @@ def ctf_auto(args: argparse.Namespace) -> None:
         args.verbose,
         "[ctf-auto] strategy: trivial checks -> trial division -> Pollard Rho recursion",
     )
-    factors, phi, d, m = _solve_ctf_values(n, e, c, verbose=args.verbose)
+    solved = _solve_ctf_values(n, e, c, verbose=args.verbose)
+    if solved is None:
+        print(
+            "factorization did not complete with current methods; "
+            "this challenge may require a different RSA attack"
+        )
+        return
+    factors, phi, d, m = solved
     _print_factorization(factors)
     print(f"phi: {phi}")
     print(f"d: {d}")
@@ -780,6 +883,18 @@ def build_parser() -> argparse.ArgumentParser:
         "ctf-factor", help="Try factoring n with Pollard Rho (works for weaker CTF moduli)"
     )
     ctf_factor_parser.add_argument("--n", required=True, help="Modulus n")
+    ctf_factor_parser.add_argument(
+        "--max-rho-attempts",
+        type=int,
+        default=24,
+        help="Maximum Pollard Rho retry attempts (default: 24)",
+    )
+    ctf_factor_parser.add_argument(
+        "--max-rho-steps",
+        type=int,
+        default=200000,
+        help="Maximum iteration steps per Pollard Rho attempt (default: 200000)",
+    )
     _add_verbose_flag(ctf_factor_parser)
     ctf_factor_parser.set_defaults(func=ctf_factor)
 
@@ -790,6 +905,18 @@ def build_parser() -> argparse.ArgumentParser:
     ctf_solve_parser.add_argument("--n", required=True, help="Modulus n")
     ctf_solve_parser.add_argument("--e", required=True, help="Public exponent e")
     ctf_solve_parser.add_argument("--c", required=True, help="Ciphertext integer")
+    ctf_solve_parser.add_argument(
+        "--max-rho-attempts",
+        type=int,
+        default=24,
+        help="Maximum Pollard Rho retry attempts (default: 24)",
+    )
+    ctf_solve_parser.add_argument(
+        "--max-rho-steps",
+        type=int,
+        default=200000,
+        help="Maximum iteration steps per Pollard Rho attempt (default: 200000)",
+    )
     _add_ctf_output_mode_flags(ctf_solve_parser)
     _add_verbose_flag(ctf_solve_parser)
     ctf_solve_parser.set_defaults(func=ctf_solve)
