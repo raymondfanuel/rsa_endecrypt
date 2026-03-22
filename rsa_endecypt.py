@@ -758,6 +758,175 @@ def ctf_auto(args: argparse.Namespace) -> None:
 
 
 # -------------------------
+# Common Modulus Attack
+# -------------------------
+
+
+def _extended_gcd(a: int, b: int) -> tuple[int, int, int]:
+    """Return (g, x, y) such that a*x + b*y == g == gcd(a, b)."""
+    if b == 0:
+        return a, 1, 0
+    g, x, y = _extended_gcd(b, a % b)
+    return g, y, x - (a // b) * y
+
+
+def ctf_common_modulus(args: argparse.Namespace) -> None:
+    """Common Modulus Attack: recover m when the same m is encrypted under two
+    different exponents (e1, e2) with the same modulus n.
+
+    Requires gcd(e1, e2) == 1 (almost always true for standard exponents).
+
+    Math:
+        Bezout: a*e1 + b*e2 = 1
+        m = c1^a * c2^b mod n
+          = (m^e1)^a * (m^e2)^b mod n
+          = m^(a*e1 + b*e2) mod n
+          = m^1 mod n
+    """
+    n  = _parse_nonnegative_int(args.n,  "n")
+    e1 = _parse_nonnegative_int(args.e1, "e1")
+    e2 = _parse_nonnegative_int(args.e2, "e2")
+    c1 = _parse_nonnegative_int(args.c1, "c1")
+    c2 = _parse_nonnegative_int(args.c2, "c2")
+
+    if n <= 1:
+        _exit("n must be > 1")
+    if e1 == e2:
+        _exit("e1 and e2 must be different")
+    if c1 >= n or c2 >= n:
+        _exit("ciphertext integers must satisfy c < n")
+
+    g, a, b = _extended_gcd(e1, e2)
+    _verbose(args.verbose, f"[common-modulus] gcd(e1, e2) = {g}")
+    _verbose(args.verbose, f"[common-modulus] Bezout: a={a}, b={b}  =>  a*e1 + b*e2 = {a*e1 + b*e2}")
+
+    if g != 1:
+        _exit(
+            f"gcd(e1, e2) = {g} != 1; common modulus attack requires coprime exponents. "
+            "Try dividing both exponents by their gcd, or use a different attack."
+        )
+
+    # Handle negative Bezout coefficients via modular inverse
+    if a < 0:
+        base1 = pow(pow(c1, -1, n), -a, n)
+        base2 = pow(c2, b, n)
+    else:
+        base1 = pow(c1, a, n)
+        base2 = pow(pow(c2, -1, n), -b, n)
+
+    m = (base1 * base2) % n
+    _verbose(args.verbose, f"[common-modulus] recovered m = {m}")
+    _print_ctf_plaintext(m, args.output_mode)
+
+
+# -------------------------
+# Pollard p-1 Attack
+# -------------------------
+
+
+def _sieve_primes(limit: int) -> list[int]:
+    """Return all primes up to limit via sieve of Eratosthenes."""
+    if limit < 2:
+        return []
+    is_prime = bytearray([1]) * (limit + 1)
+    is_prime[0] = is_prime[1] = 0
+    for i in range(2, int(limit ** 0.5) + 1):
+        if is_prime[i]:
+            is_prime[i * i :: i] = bytearray(len(is_prime[i * i :: i]))
+    return [i for i in range(2, limit + 1) if is_prime[i]]
+
+
+def _pollard_pm1(
+    n: int,
+    b1: int = 1_000_000,
+    factorial_fallback_limit: int = 2000,
+    verbose: bool = False,
+) -> Optional[int]:
+    """Pollard p-1 factorization.
+
+    Stage 1 (standard): accumulates a = 2^(prod of prime powers <= B1) mod n,
+    checks gcd(a-1, n) for a factor.
+
+    Factorial fallback: if Stage 1 fails, tries a = 2^k! for k up to
+    factorial_fallback_limit. This catches primes where p-1 | k! for some
+    small k (as in the 'twinkle bits' challenge above where k=519 worked).
+    """
+    _verbose(verbose, f"[pollard-p1] Stage 1: B1={b1}")
+    primes = _sieve_primes(b1)
+    a = 2
+    for p in primes:
+        pk = p
+        while pk * p <= b1:
+            pk *= p
+        a = pow(a, pk, n)
+        g = math.gcd(a - 1, n)
+        if 1 < g < n:
+            _verbose(verbose, f"[pollard-p1] Stage 1 factor found at prime {p}: {g}")
+            return g
+        if g == n:
+            _verbose(verbose, f"[pollard-p1] Stage 1 overshot (g=n) at prime {p}")
+            break
+
+    _verbose(verbose, f"[pollard-p1] Stage 1 failed; trying factorial fallback up to k={factorial_fallback_limit}")
+    a = 2
+    for k in range(1, factorial_fallback_limit + 1):
+        a = pow(a, k, n)
+        g = math.gcd(a - 1, n)
+        if 1 < g < n:
+            _verbose(verbose, f"[pollard-p1] Factorial fallback factor found at k={k}: {g}")
+            return g
+        if g == n:
+            _verbose(verbose, f"[pollard-p1] Factorial fallback overshot at k={k}")
+            break
+
+    _verbose(verbose, "[pollard-p1] No factor found")
+    return None
+
+
+def ctf_pollard_pm1(args: argparse.Namespace) -> None:
+    """Attempt to factor n using Pollard's p-1, then decrypt c with exponent e."""
+    n = _parse_nonnegative_int(args.n, "n")
+    e = _parse_nonnegative_int(args.e, "e")
+    c = _parse_nonnegative_int(args.c, "c")
+
+    if n <= 1:
+        _exit("n must be > 1")
+    if c >= n:
+        _exit("ciphertext integer should satisfy c < n")
+
+    factor = _pollard_pm1(
+        n,
+        b1=args.b1,
+        factorial_fallback_limit=args.factorial_limit,
+        verbose=args.verbose,
+    )
+
+    if factor is None:
+        _exit(
+            "Pollard p-1 did not find a factor. "
+            "Try increasing --b1 or --factorial-limit."
+        )
+
+    p = factor
+    q = n // p
+    if p * q != n:
+        _exit(f"internal error: factor {p} does not divide n evenly")
+
+    _verbose(args.verbose, f"[pollard-p1] p = {p}")
+    _verbose(args.verbose, f"[pollard-p1] q = {q}")
+
+    phi = (p - 1) * (q - 1)
+    d   = _mod_inverse(e, phi)
+    m   = pow(c, d, n)
+
+    print(f"p:   {p}")
+    print(f"q:   {q}")
+    print(f"phi: {phi}")
+    print(f"d:   {d}")
+    _print_ctf_plaintext(m, args.output_mode)
+
+
+# -------------------------
 # CLI
 # -------------------------
 
@@ -931,6 +1100,57 @@ def build_parser() -> argparse.ArgumentParser:
     _add_ctf_output_mode_flags(ctf_auto_parser)
     _add_verbose_flag(ctf_auto_parser)
     ctf_auto_parser.set_defaults(func=ctf_auto)
+
+    # ------------------------------------------------------------------
+    # ctf-common-modulus
+    # ------------------------------------------------------------------
+    ctf_cm_parser = subparsers.add_parser(
+        "ctf-common-modulus",
+        help=(
+            "Common Modulus Attack: recover plaintext when the same message is "
+            "encrypted with two different exponents sharing the same modulus n."
+        ),
+    )
+    ctf_cm_parser.add_argument("--n",  required=True, help="Shared modulus n")
+    ctf_cm_parser.add_argument("--e1", required=True, help="First public exponent e1")
+    ctf_cm_parser.add_argument("--e2", required=True, help="Second public exponent e2")
+    ctf_cm_parser.add_argument("--c1", required=True, help="Ciphertext encrypted with e1")
+    ctf_cm_parser.add_argument("--c2", required=True, help="Ciphertext encrypted with e2")
+    _add_ctf_output_mode_flags(ctf_cm_parser)
+    _add_verbose_flag(ctf_cm_parser)
+    ctf_cm_parser.set_defaults(func=ctf_common_modulus)
+
+    # ------------------------------------------------------------------
+    # ctf-pollard-pm1
+    # ------------------------------------------------------------------
+    ctf_pm1_parser = subparsers.add_parser(
+        "ctf-pollard-pm1",
+        help=(
+            "Pollard p-1 attack: factor n when p-1 is B-smooth or factorial-smooth, "
+            "then decrypt c. Use when the challenge hints at 'smooth primes'."
+        ),
+    )
+    ctf_pm1_parser.add_argument("--n", required=True, help="Modulus n")
+    ctf_pm1_parser.add_argument("--e", required=True, help="Public exponent e")
+    ctf_pm1_parser.add_argument("--c", required=True, help="Ciphertext integer c")
+    ctf_pm1_parser.add_argument(
+        "--b1",
+        type=int,
+        default=1_000_000,
+        help="Smoothness bound B1 for Stage 1 (default: 1000000)",
+    )
+    ctf_pm1_parser.add_argument(
+        "--factorial-limit",
+        type=int,
+        default=2000,
+        help=(
+            "Max k for factorial fallback 2^(k!) mod n (default: 2000). "
+            "Catches primes where p-1 divides k! for small k."
+        ),
+    )
+    _add_ctf_output_mode_flags(ctf_pm1_parser)
+    _add_verbose_flag(ctf_pm1_parser)
+    ctf_pm1_parser.set_defaults(func=ctf_pollard_pm1)
 
     return parser
 
