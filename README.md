@@ -138,6 +138,3 @@ python3 rsa_endecypt.py ctf-solve --help
 - `ctf-factor` fails
   - The modulus is likely too strong for this method.
 
-## License
-
-MIT (recommended). Add a `LICENSE` file before publishing.
