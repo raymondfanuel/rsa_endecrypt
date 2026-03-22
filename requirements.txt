@@ -1,0 +1,2 @@
+# Required for secure mode commands: keygen, encrypt, decrypt
+cryptography
