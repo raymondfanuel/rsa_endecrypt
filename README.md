@@ -1,160 +1,171 @@
-# RSA CTF Toolkit
+# RSA CTF Tool
 
-A practical RSA command-line utility for CTF players.
+A practical command-line toolkit for solving RSA-focused CTF challenges, with an optional secure RSA (OAEP) mode for normal cryptographic workflows.
 
-This tool supports:
-- Secure RSA OAEP operations for normal crypto workflows.
-- Textbook RSA operations and helpers for CTF challenge solving.
+## Scripts
 
-Main scripts:
-- `rsa_ctf_tool.py` (preferred)
+- `rsa_ctf_tool.py` (preferred entrypoint)
 - `rsa_endecypt.py` (backward-compatible alias)
 
-## Features
+## What This Tool Covers
 
-- Secure mode commands:
-  - `keygen`
-  - `encrypt`
-  - `decrypt`
-- CTF mode commands:
-  - `ctf-encrypt` (`c = m^e mod n`)
-  - `ctf-decrypt` (`m = c^d mod n`)
-  - `ctf-derive-d` (derive `d` from `e` and `phi` or `p,q`)
-  - `ctf-factor` (hybrid factoring: trivial checks, trial division, Pollard Rho)
-  - `ctf-solve` (factor `n`, derive `d`, decrypt `c`)
-  - `ctf-auto` (auto solve + auto decode output)
-  - `ctf-common-modulus` (Common Modulus Attack: same `n`, two `(e, c)` pairs)
-  - `ctf-pollard-pm1` (Pollard p-1 attack for smooth-prime challenges)
-- Integer parsing supports decimal and hex (`0x...`).
-- Output modes: `--auto` (default), `--as-text`, `--as-hex`, `--as-base64`.
-- Verbose tracing for CTF solving with `--verbose`.
-
-## Important Notes
-
-- This is for legal CTF practice and education.
-- `ctf-factor`, `ctf-solve`, `ctf-pollard-pm1` only work when `n` is weak/factorable.
-- Real-world strong RSA keys will not be practically factorable with this script.
+- Textbook RSA operations: encrypt/decrypt integer messages used in many CTF tasks
+- Key math helpers: derive `d` from `phi` or `p`,`q`
+- Factoring-assisted solves: hybrid trial division + Fermat + Pollard Rho
+- Specialized attacks:
+  - Fermat factorization (`ctf-fermat`)
+  - Common modulus attack (`ctf-common-modulus`)
+  - Pollard p-1 (`ctf-pollard-pm1`)
+- Secure mode (OAEP-SHA256) via `cryptography`:
+  - `keygen`, `encrypt`, `decrypt`
 
 ## Requirements
 
 - Python 3.8+
-- `cryptography` package (only required for secure mode commands: `keygen`, `encrypt`, `decrypt`)
+- `cryptography` is only required for secure mode commands (`keygen`, `encrypt`, `decrypt`)
+- CTF commands run without `cryptography`
 
 ## Installation
 
 ```bash
 git clone <your-repo-url>
 cd rsa_endecrypt
-python3 -m pip install cryptography
+python3 -m pip install -r requirements.txt
 ```
 
-## Quick Start
+If you only use CTF commands, `cryptography` is optional.
 
-Show help:
+## Quick Start
 
 ```bash
 python3 rsa_ctf_tool.py --help
 ```
 
-## CTF Workflows
+## Command Overview
 
-### 1) Encrypt then decrypt (known `d`)
+| Command | Purpose |
+|---|---|
+| `keygen` | Generate RSA keypair (PEM) for secure mode |
+| `encrypt` | Secure OAEP encryption |
+| `decrypt` | Secure OAEP decryption |
+| `ctf-encrypt` | Textbook RSA encrypt (`c = m^e mod n`) |
+| `ctf-decrypt` | Textbook RSA decrypt (`m = c^d mod n`) |
+| `ctf-derive-d` | Compute private exponent from `e` + (`phi` or `p,q`) |
+| `ctf-factor` | Factor `n` and print factors + `phi(n)` |
+| `ctf-solve` | Factor `n`, derive `d`, decrypt `c` |
+| `ctf-auto` | Auto-solve shortcut for weak RSA challenge instances |
+| `ctf-fermat` | Fermat factorization (best when `p` and `q` are close) |
+| `ctf-common-modulus` | Recover message from same `n`, different exponents |
+| `ctf-pollard-pm1` | Pollard p-1 attack for smooth-prime style challenges |
+
+## Input Format
+
+- Integer inputs accept:
+  - decimal: `123456`
+  - hex: `0xdeadbeef`
+- For textbook RSA text conversion:
+  - `ctf-encrypt --m-text "flag{...}"` converts UTF-8 text to integer
+
+## Output Modes (CTF commands)
+
+Most CTF commands support:
+
+- `--auto` (default): tries user-friendly decoding
+- `--as-text`: UTF-8 output
+- `--as-hex`: hex integer
+- `--as-base64`: base64 bytes
+- `--as-int`: raw integer
+
+## Typical CTF Workflows
+
+### 1) Decrypt when `d` is known
 
 ```bash
-python3 rsa_ctf_tool.py ctf-encrypt --n 55 --e 3 --m-int 12
-# output: 23
-
-python3 rsa_ctf_tool.py ctf-decrypt --n 55 --c 23 --d 27 --auto
-# output: 12
+python3 rsa_ctf_tool.py ctf-decrypt --n <n> --c <c> --d <d> --auto
 ```
 
-### 2) Decrypt when `p`, `q`, and `e` are known
+### 2) Decrypt when `p`, `q`, `e` are known
 
 ```bash
 python3 rsa_ctf_tool.py ctf-decrypt --n <n> --c <c> --p <p> --q <q> --e <e> --auto
 ```
 
-### 3) Derive `d` directly
+### 3) Derive `d` first
 
 ```bash
-python3 rsa_ctf_tool.py ctf-derive-d --e <e> --p <p> --q <q>
-# or
 python3 rsa_ctf_tool.py ctf-derive-d --e <e> --phi <phi>
+# or
+python3 rsa_ctf_tool.py ctf-derive-d --e <e> --p <p> --q <q>
 ```
 
-### 4) Try to factor weak modulus
+### 4) Factor only (inspect factors and phi)
 
 ```bash
 python3 rsa_ctf_tool.py ctf-factor --n <n> --verbose
 ```
 
-### 5) Full auto solve for weak challenges
+Useful tuning flags:
+
+- `--max-rho-attempts` (default `24`)
+- `--max-rho-steps` (default `200000`)
+- `--fermat-iterations` (default `1000000`)
+
+### 5) Factor + decrypt in one command
 
 ```bash
 python3 rsa_ctf_tool.py ctf-solve --n <n> --e <e> --c <c> --auto --verbose
 ```
 
-### 6) Fully automatic solve workflow
+### 6) One-command auto solve
 
 ```bash
 python3 rsa_ctf_tool.py ctf-auto --n <n> --e <e> --c <c> --auto --verbose
 ```
 
-### 7) Work with text messages in textbook RSA
+### 7) Fermat attack (close prime factors)
 
 ```bash
-python3 rsa_ctf_tool.py ctf-encrypt --n <n> --e <e> --m-text "flag"
-python3 rsa_ctf_tool.py ctf-decrypt --n <n> --c <cipher_int> --d <d> --as-text
+python3 rsa_ctf_tool.py ctf-fermat --n <n> --e <e> --c <c> --auto --verbose
 ```
 
-### 8) Common Modulus Attack
+Useful tuning flags:
 
-Use when a challenge gives you the **same modulus `n`** encrypted under **two different exponents** (`e1`, `e2`) for the same plaintext. No private key or factoring needed.
+- `--max-iterations`
+- `--progress-interval`
+
+### 8) Common modulus attack
+
+Use this when two ciphertexts encrypt the same plaintext under the same `n` but different exponents:
 
 ```bash
 python3 rsa_ctf_tool.py ctf-common-modulus \
-  --n <n> \
-  --e1 <e1> --c1 <c1> \
-  --e2 <e2> --c2 <c2> \
-  --verbose
+  --n <n> --e1 <e1> --c1 <c1> --e2 <e2> --c2 <c2> --auto --verbose
 ```
 
-**How it works:** Uses the Extended Euclidean Algorithm to find Bézout coefficients `a, b` such that `a·e1 + b·e2 = 1`, then recovers `m = c1^a · c2^b mod n`.
+### 9) Pollard p-1 attack
 
-**When to use it:** The challenge provides two public keys with the same `n` but different exponents, and both encrypt the same secret message.
-
-**Requirements:** `gcd(e1, e2) = 1` (true for virtually all standard exponent pairs).
-
-### 9) Pollard p-1 Attack
-
-Use when the challenge hints that the prime factors were generated with **smooth** `p-1` values (e.g. hints like "smooth primes", "Pollard", or references to factorials/small numbers).
+Use this when challenge hints suggest smooth `p-1` structure:
 
 ```bash
-python3 rsa_ctf_tool.py ctf-pollard-pm1 \
-  --n <n> --e <e> --c <c> \
-  --verbose
+python3 rsa_ctf_tool.py ctf-pollard-pm1 --n <n> --e <e> --c <c> --auto --verbose
 ```
 
-Two tunable parameters let you cover different challenge types:
+Useful tuning flags:
 
-| Flag | Default | Purpose |
-|---|---|---|
-| `--b1` | `1000000` | Standard smoothness bound: covers primes where all factors of `p-1` are ≤ B1 |
-| `--factorial-limit` | `2000` | Factorial fallback: covers primes where `p-1` divides `k!` for some small `k` |
+- `--b1` (default `1000000`)
+- `--factorial-limit` (default `2000`)
 
-**Standard smoothness** (all prime factors of `p-1` are small):
-```bash
-python3 rsa_ctf_tool.py ctf-pollard-pm1 --n <n> --e <e> --c <c> --b1 5000000
-```
+## Which Attack Should I Try?
 
-**Factorial-smooth** (challenge hints at factorials or sequential numbers):
-```bash
-python3 rsa_ctf_tool.py ctf-pollard-pm1 --n <n> --e <e> --c <c> --factorial-limit 600
-```
-
-**How it works:**
-- **Stage 1:** Computes `a = 2^(∏ pᵏ) mod n` for all prime powers `pᵏ ≤ B1`, then checks `gcd(a-1, n)`.
-- **Factorial fallback:** Iteratively raises `a = 2^k mod n` for `k = 1, 2, 3, ...` and checks `gcd(a-1, n)` at each step. Catches primes where `p-1 | k!` for some small `k`.
+| Challenge Clue | Start With |
+|---|---|
+| You already have `d` | `ctf-decrypt --d` |
+| You have `p`,`q` | `ctf-decrypt --p --q --e` |
+| You have `phi` | `ctf-decrypt --phi --e` |
+| Weak/small modulus | `ctf-auto` or `ctf-solve` |
+| `p` and `q` are close | `ctf-fermat` |
+| Same `n`, two exponents, same message | `ctf-common-modulus` |
+| Smooth-prime hints (`p-1` smooth) | `ctf-pollard-pm1` |
 
 ## Secure Mode (OAEP-SHA256)
 
@@ -164,19 +175,19 @@ Generate keys:
 python3 rsa_ctf_tool.py keygen --bits 3072 --private-out private.pem --public-out public.pem
 ```
 
-Encrypt text:
+Encrypt:
 
 ```bash
 python3 rsa_ctf_tool.py encrypt --public-key public.pem --text "hello"
 ```
 
-Decrypt base64 ciphertext:
+Decrypt:
 
 ```bash
 python3 rsa_ctf_tool.py decrypt --private-key private.pem --base64 "<ciphertext>" --as-text
 ```
 
-## Command Reference
+## Full Help Reference
 
 ```bash
 python3 rsa_ctf_tool.py keygen --help
@@ -188,31 +199,27 @@ python3 rsa_ctf_tool.py ctf-derive-d --help
 python3 rsa_ctf_tool.py ctf-factor --help
 python3 rsa_ctf_tool.py ctf-solve --help
 python3 rsa_ctf_tool.py ctf-auto --help
+python3 rsa_ctf_tool.py ctf-fermat --help
 python3 rsa_ctf_tool.py ctf-common-modulus --help
 python3 rsa_ctf_tool.py ctf-pollard-pm1 --help
 ```
 
-## Attack Selection Guide
-
-| Symptom / Challenge Hint | Command |
-|---|---|
-| Given `p`, `q`, `e`, `c` | `ctf-decrypt --p --q --e --c` |
-| Given `phi`, `e`, `c` | `ctf-decrypt --phi --e --c` |
-| Given `d`, `c` | `ctf-decrypt --d --c` |
-| Small or weak `n` | `ctf-auto` or `ctf-solve` |
-| Same `n`, two `(e, c)` pairs, same plaintext | `ctf-common-modulus` |
-| "Smooth primes", "Pollard", hints about small factors of `p-1` | `ctf-pollard-pm1 --b1 <bound>` |
-| "Factorial", "sequential", hints about `k!` structure | `ctf-pollard-pm1 --factorial-limit <k>` |
-
 ## Troubleshooting
 
-- **Error:** `plaintext integer must satisfy m < n`
-  - Use a larger modulus or smaller message integer.
-- **Error:** modular inverse failure (`gcd(e, phi) != 1`)
-  - Verify challenge parameters; `e` and `phi` must be coprime.
-- **`ctf-factor` fails**
-  - The modulus is likely too strong for Pollard Rho. Try `ctf-pollard-pm1` if the challenge hints at smooth primes.
-- **`ctf-common-modulus` fails with `gcd(e1, e2) != 1`**
-  - The exponents share a common factor; the standard attack does not apply directly.
-- **`ctf-pollard-pm1` fails**
-  - Try increasing `--b1` (e.g. `--b1 10000000`) or `--factorial-limit` (e.g. `--factorial-limit 2000`). If it still fails, the prime was likely not generated with a smooth `p-1`.
+- `plaintext integer must satisfy m < n`
+  - Your message integer is too large for the modulus.
+- `gcd(e, phi) != 1`
+  - `e` is not invertible modulo `phi`; verify challenge values.
+- Factorization commands do not finish
+  - Increase rho/fermat limits or switch to a more suitable attack (`ctf-fermat`, `ctf-common-modulus`, `ctf-pollard-pm1`).
+- `ctf-common-modulus` fails with non-coprime exponents
+  - Standard common modulus attack requires `gcd(e1, e2) = 1`.
+
+## Safety and Scope
+
+- Intended for legal CTFs and education.
+- Not intended for attacking real systems.
+
+## License
+
+MIT. See `LICENSE`.

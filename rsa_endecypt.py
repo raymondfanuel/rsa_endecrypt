@@ -485,12 +485,51 @@ def _pollards_rho(
     return None
 
 
+_FERMAT_AUTO_ITERATIONS = 1_000_000
+
+
+def _fermat_factor(
+    n: int,
+    max_iterations: int = _FERMAT_AUTO_ITERATIONS,
+    verbose: bool = False,
+    progress_interval: int = 100_000,
+) -> Optional[tuple[int, int]]:
+    """Fermat factorization.  Works well when p and q are close together.
+
+    Searches for integers a, b such that n = a² - b² = (a-b)(a+b).
+    Returns (p, q) with p <= q, or None if not found within max_iterations.
+    """
+    if n % 2 == 0:
+        return 2, n // 2
+
+    a = math.isqrt(n)
+    if a * a == n:
+        # n is a perfect square
+        return a, a
+
+    a += 1  # ceil(sqrt(n))
+    for i in range(max_iterations):
+        b2 = a * a - n
+        b = math.isqrt(b2)
+        if b * b == b2:
+            p, q = a - b, a + b
+            _verbose(verbose, f"[fermat] factor found at iteration {i + 1}: p={p}, q={q}")
+            return p, q
+        a += 1
+        if verbose and i > 0 and i % progress_interval == 0:
+            _verbose(verbose, f"[fermat] {i:,} iterations done, a={a}")
+
+    _verbose(verbose, f"[fermat] no factor found after {max_iterations:,} iterations")
+    return None
+
+
 def _factor_recursive(
     n: int,
     factors: list[int],
     verbose: bool = False,
     max_rho_attempts: int = 24,
     max_rho_steps: int = 200_000,
+    fermat_iterations: int = _FERMAT_AUTO_ITERATIONS,
 ) -> bool:
     if n == 1:
         return True
@@ -504,42 +543,47 @@ def _factor_recursive(
     if trial_factor is not None:
         left, right = trial_factor
         left_ok = _factor_recursive(
-            left,
-            factors,
-            verbose=verbose,
-            max_rho_attempts=max_rho_attempts,
-            max_rho_steps=max_rho_steps,
+            left, factors, verbose=verbose,
+            max_rho_attempts=max_rho_attempts, max_rho_steps=max_rho_steps,
+            fermat_iterations=fermat_iterations,
         )
         right_ok = _factor_recursive(
-            right,
-            factors,
-            verbose=verbose,
-            max_rho_attempts=max_rho_attempts,
-            max_rho_steps=max_rho_steps,
+            right, factors, verbose=verbose,
+            max_rho_attempts=max_rho_attempts, max_rho_steps=max_rho_steps,
+            fermat_iterations=fermat_iterations,
+        )
+        return left_ok and right_ok
+
+    _verbose(verbose, "[+] Fermat factorization...")
+    fermat_result = _fermat_factor(n, max_iterations=fermat_iterations, verbose=verbose)
+    if fermat_result is not None:
+        p, q = fermat_result
+        left_ok = _factor_recursive(
+            p, factors, verbose=verbose,
+            max_rho_attempts=max_rho_attempts, max_rho_steps=max_rho_steps,
+            fermat_iterations=fermat_iterations,
+        )
+        right_ok = _factor_recursive(
+            q, factors, verbose=verbose,
+            max_rho_attempts=max_rho_attempts, max_rho_steps=max_rho_steps,
+            fermat_iterations=fermat_iterations,
         )
         return left_ok and right_ok
 
     divisor = _pollards_rho(
-        n,
-        attempts=max_rho_attempts,
-        max_steps=max_rho_steps,
-        verbose=verbose,
+        n, attempts=max_rho_attempts, max_steps=max_rho_steps, verbose=verbose,
     )
     if divisor is None:
         return False
     left_ok = _factor_recursive(
-        divisor,
-        factors,
-        verbose=verbose,
-        max_rho_attempts=max_rho_attempts,
-        max_rho_steps=max_rho_steps,
+        divisor, factors, verbose=verbose,
+        max_rho_attempts=max_rho_attempts, max_rho_steps=max_rho_steps,
+        fermat_iterations=fermat_iterations,
     )
     right_ok = _factor_recursive(
-        n // divisor,
-        factors,
-        verbose=verbose,
-        max_rho_attempts=max_rho_attempts,
-        max_rho_steps=max_rho_steps,
+        n // divisor, factors, verbose=verbose,
+        max_rho_attempts=max_rho_attempts, max_rho_steps=max_rho_steps,
+        fermat_iterations=fermat_iterations,
     )
     return left_ok and right_ok
 
@@ -549,6 +593,7 @@ def _factorize(
     verbose: bool = False,
     max_rho_attempts: int = 24,
     max_rho_steps: int = 200_000,
+    fermat_iterations: int = _FERMAT_AUTO_ITERATIONS,
 ) -> Optional[list[int]]:
     factors: list[int] = []
     success = _factor_recursive(
@@ -557,6 +602,7 @@ def _factorize(
         verbose=verbose,
         max_rho_attempts=max_rho_attempts,
         max_rho_steps=max_rho_steps,
+        fermat_iterations=fermat_iterations,
     )
     if not success:
         return None
@@ -619,6 +665,10 @@ def _print_ctf_plaintext(m: int, output_mode: str) -> None:
             _exit("decrypted integer is not valid UTF-8")
         return
 
+    if output_mode == "int":
+        print(m)
+        return
+
     if output_mode == "hex":
         print(hex(m))
         return
@@ -641,6 +691,7 @@ def _solve_ctf_values(
     verbose: bool = False,
     max_rho_attempts: int = 24,
     max_rho_steps: int = 200_000,
+    fermat_iterations: int = _FERMAT_AUTO_ITERATIONS,
 ) -> Optional[tuple[list[int], int, int, int]]:
     _verbose(verbose, f"[ctf-solve] starting factorization of n={n}")
     factors = _factorize(
@@ -648,6 +699,7 @@ def _solve_ctf_values(
         verbose=verbose,
         max_rho_attempts=max_rho_attempts,
         max_rho_steps=max_rho_steps,
+        fermat_iterations=fermat_iterations,
     )
     if factors is None:
         return None
@@ -682,6 +734,7 @@ def ctf_factor(args: argparse.Namespace) -> None:
         verbose=args.verbose,
         max_rho_attempts=args.max_rho_attempts,
         max_rho_steps=args.max_rho_steps,
+        fermat_iterations=args.fermat_iterations,
     )
     if factors is None:
         print(
@@ -716,6 +769,7 @@ def ctf_solve(args: argparse.Namespace) -> None:
         verbose=args.verbose,
         max_rho_attempts=args.max_rho_attempts,
         max_rho_steps=args.max_rho_steps,
+        fermat_iterations=args.fermat_iterations,
     )
     if solved is None:
         print(
@@ -754,6 +808,76 @@ def ctf_auto(args: argparse.Namespace) -> None:
     _print_factorization(factors)
     print(f"phi: {phi}")
     print(f"d: {d}")
+    _print_ctf_plaintext(m, args.output_mode)
+
+
+# -------------------------
+# Fermat Factorization Attack
+# -------------------------
+
+
+def ctf_fermat(args: argparse.Namespace) -> None:
+    """Fermat factorization: exploits primes p and q that are close together.
+
+    Finds a, b such that n = a² - b² = (a-b)(a+b), giving p = a-b, q = a+b.
+    Optionally decrypts c if --e and --c are supplied.
+    """
+    n = _parse_nonnegative_int(args.n, "n")
+    if n <= 1:
+        _exit("n must be > 1")
+    if n % 2 == 0:
+        _exit("n is even; Fermat factorization targets odd semi-primes")
+    if args.max_iterations <= 0:
+        _exit("--max-iterations must be > 0")
+
+    has_e = args.e is not None
+    has_c = args.c is not None
+    if has_c and not has_e:
+        _exit("--e is required when --c is provided")
+
+    _verbose(
+        args.verbose,
+        f"[fermat] n={n}\n[fermat] max_iterations={args.max_iterations:,}",
+    )
+
+    result = _fermat_factor(
+        n,
+        max_iterations=args.max_iterations,
+        verbose=args.verbose,
+        progress_interval=args.progress_interval,
+    )
+
+    if result is None:
+        _exit(
+            f"Fermat factorization failed after {args.max_iterations:,} iterations. "
+            "p and q are likely not close together. "
+            "Try ctf-auto, ctf-pollard-pm1, or ctf-common-modulus instead."
+        )
+
+    p, q = result
+    _verbose(args.verbose, f"[fermat] p = {p}")
+    _verbose(args.verbose, f"[fermat] q = {q}")
+    print(f"p: {p}")
+    print(f"q: {q}")
+
+    if not has_e:
+        return
+
+    e = _parse_nonnegative_int(args.e, "e")
+    phi = (p - 1) * (q - 1)
+    d = _mod_inverse(e, phi)
+    _verbose(args.verbose, f"[fermat] phi = {phi}")
+    _verbose(args.verbose, f"[fermat] d   = {d}")
+    print(f"phi: {phi}")
+    print(f"d:   {d}")
+
+    if not has_c:
+        return
+
+    c = _parse_nonnegative_int(args.c, "c")
+    if c >= n:
+        _exit("ciphertext integer should satisfy c < n")
+    m = pow(c, d, n)
     _print_ctf_plaintext(m, args.output_mode)
 
 
@@ -961,6 +1085,13 @@ def _add_ctf_output_mode_flags(parser: argparse.ArgumentParser) -> None:
         const="base64",
         help="Print plaintext bytes as base64",
     )
+    output_group.add_argument(
+        "--as-int",
+        dest="output_mode",
+        action="store_const",
+        const="int",
+        help="Print raw plaintext integer m",
+    )
     parser.set_defaults(output_mode="auto")
 
 
@@ -1064,6 +1195,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=200000,
         help="Maximum iteration steps per Pollard Rho attempt (default: 200000)",
     )
+    ctf_factor_parser.add_argument(
+        "--fermat-iterations",
+        type=int,
+        default=_FERMAT_AUTO_ITERATIONS,
+        help=f"Maximum Fermat factorization iterations (default: {_FERMAT_AUTO_ITERATIONS:,})",
+    )
     _add_verbose_flag(ctf_factor_parser)
     ctf_factor_parser.set_defaults(func=ctf_factor)
 
@@ -1086,6 +1223,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=200000,
         help="Maximum iteration steps per Pollard Rho attempt (default: 200000)",
     )
+    ctf_solve_parser.add_argument(
+        "--fermat-iterations",
+        type=int,
+        default=_FERMAT_AUTO_ITERATIONS,
+        help=f"Maximum Fermat factorization iterations (default: {_FERMAT_AUTO_ITERATIONS:,})",
+    )
     _add_ctf_output_mode_flags(ctf_solve_parser)
     _add_verbose_flag(ctf_solve_parser)
     ctf_solve_parser.set_defaults(func=ctf_solve)
@@ -1100,6 +1243,35 @@ def build_parser() -> argparse.ArgumentParser:
     _add_ctf_output_mode_flags(ctf_auto_parser)
     _add_verbose_flag(ctf_auto_parser)
     ctf_auto_parser.set_defaults(func=ctf_auto)
+
+    # ------------------------------------------------------------------
+    # ctf-fermat
+    # ------------------------------------------------------------------
+    ctf_fermat_parser = subparsers.add_parser(
+        "ctf-fermat",
+        help=(
+            "Fermat factorization: exploit primes p and q that are close together. "
+            "Optionally decrypt c if --e and --c are supplied."
+        ),
+    )
+    ctf_fermat_parser.add_argument("--n", required=True, help="Modulus n")
+    ctf_fermat_parser.add_argument("--e", default=None, help="Public exponent e (required to decrypt)")
+    ctf_fermat_parser.add_argument("--c", default=None, help="Ciphertext integer c (requires --e)")
+    ctf_fermat_parser.add_argument(
+        "--max-iterations",
+        type=int,
+        default=_FERMAT_AUTO_ITERATIONS,
+        help=f"Maximum Fermat iterations before giving up (default: {_FERMAT_AUTO_ITERATIONS:,})",
+    )
+    ctf_fermat_parser.add_argument(
+        "--progress-interval",
+        type=int,
+        default=100_000,
+        help="Print progress every N iterations when --verbose is set (default: 100000)",
+    )
+    _add_ctf_output_mode_flags(ctf_fermat_parser)
+    _add_verbose_flag(ctf_fermat_parser)
+    ctf_fermat_parser.set_defaults(func=ctf_fermat)
 
     # ------------------------------------------------------------------
     # ctf-common-modulus
