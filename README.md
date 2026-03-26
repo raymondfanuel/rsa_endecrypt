@@ -28,7 +28,7 @@ A practical command-line toolkit for solving RSA-focused CTF challenges, with an
 ## Installation
 
 ```bash
-git clone <your-repo-url>
+git clone https://github.com/raymondfanuel/rsa_endecrypt.git
 cd rsa_endecrypt
 python3 -m pip install -r requirements.txt
 ```
